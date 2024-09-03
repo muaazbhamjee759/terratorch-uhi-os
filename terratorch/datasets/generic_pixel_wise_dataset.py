@@ -20,7 +20,7 @@ from matplotlib.patches import Rectangle
 from torch import Tensor
 from torchgeo.datasets import NonGeoDataset
 
-from terratorch.datasets.utils import HLSBands, filter_valid_files, to_tensor
+from terratorch.datasets.utils import HLSBands, default_transform, filter_valid_files, generate_bands_intervals
 
 
 class GenericPixelWiseDataset(NonGeoDataset, ABC):
@@ -117,8 +117,8 @@ class GenericPixelWiseDataset(NonGeoDataset, ABC):
             )
         self.rgb_indices = [0, 1, 2] if rgb_indices is None else rgb_indices
 
-        self.dataset_bands = self._generate_bands_intervals(dataset_bands)
-        self.output_bands = self._generate_bands_intervals(output_bands)
+        self.dataset_bands = generate_bands_intervals(dataset_bands)
+        self.output_bands = generate_bands_intervals(output_bands)
 
         if self.output_bands and not self.dataset_bands:
             msg = "If output bands provided, dataset_bands must also be provided"
@@ -136,8 +136,12 @@ class GenericPixelWiseDataset(NonGeoDataset, ABC):
             self.filter_indices = None
 
         # If no transform is given, apply only to transform to torch tensor
-        self.transform = transform if transform else lambda **batch: to_tensor(batch)
+        self.transform = transform if transform else default_transform
         # self.transform = transform if transform else ToTensorV2()
+
+        import warnings
+        import rasterio
+        warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
 
     def __len__(self) -> int:
         return len(self.image_files)
@@ -155,14 +159,15 @@ class GenericPixelWiseDataset(NonGeoDataset, ABC):
             "image": image.astype(np.float32) * self.constant_scale,
             "mask": self._load_file(self.segmentation_mask_files[index], nan_replace=self.no_label_replace).to_numpy()[
                 0
-            ],
-            "filename": self.image_files[index],
+            ]
         }
 
         if self.reduce_zero_label:
             output["mask"] -= 1
         if self.transform:
             output = self.transform(**output)
+        output["filename"] = self.image_files[index]
+
         return output
 
     def _load_file(self, path, nan_replace: int | float | None = None) -> xr.DataArray:
@@ -170,26 +175,6 @@ class GenericPixelWiseDataset(NonGeoDataset, ABC):
         if nan_replace is not None:
             data = data.fillna(nan_replace)
         return data
-
-    def _generate_bands_intervals(self, bands_intervals: list[int | str | HLSBands | tuple[int]] | None = None):
-        if bands_intervals is None:
-            return None
-        bands = []
-        for element in bands_intervals:
-            # if its an interval
-            if isinstance(element, tuple):
-                if len(element) != 2:  # noqa: PLR2004
-                    msg = "When defining an interval, a tuple of two integers should be passed, defining start and end indices inclusive"
-                    raise Exception(msg)
-                expanded_element = list(range(element[0], element[1] + 1))
-                bands.extend(expanded_element)
-            else:
-                bands.append(element)
-        # check the expansion didnt result in duplicate elements
-        if len(set(bands)) != len(bands):
-            msg = "Duplicate indices detected. Indices must be unique."
-            raise Exception(msg)
-        return bands
 
 
 class GenericNonGeoSegmentationDataset(GenericPixelWiseDataset):
